@@ -32,16 +32,23 @@
 #'     \code{"revpairwise"} (\code{B - A}),
 #'     \code{"trt.vs.ctrl"} (each level against a reference level, set with
 #'     \code{ref}), \code{"trt.vs.ctrlk"}, \code{"trt.vs.ctrl1"},
-#'     \code{"eff"} (each level against the mean of all) and
-#'     \code{"consec"} (consecutive levels). A named list of coefficient vectors
-#'     can also be given for custom contrasts, one coefficient per level of
-#'     \code{compare}, for example
+#'     \code{"eff"} (each level against the mean of all the levels, itself
+#'     included), \code{"del.eff"} (each level against the mean of the
+#'     \emph{other} levels) and \code{"consec"} (consecutive levels). A named
+#'     list of coefficient vectors can also be given for custom contrasts, one
+#'     coefficient per level of \code{compare}, for example
 #'     \code{list("treat - ctrl" = c(-1, 1))}.
 #'   \item \code{interaction = TRUE} computes interaction contrasts, that is,
 #'     differences of differences such as
 #'     \eqn{(\beta_{treat,B} - \beta_{ctrl,B}) - (\beta_{treat,T} - \beta_{ctrl,T})}{(b_treat,B - b_ctrl,B) - (b_treat,T - b_ctrl,T)}.
-#'     It needs two or more fixed effects in \code{compare}, and \code{method} is
-#'     then applied to each of them.
+#'     It needs two or more fixed effects in \code{compare}. \code{method} can be
+#'     a single method, applied to every compared fixed effect, or one method
+#'     per fixed effect, given as a character vector named by the fixed effect
+#'     (or unnamed, in the order of \code{compare}). For example
+#'     \code{method = c(condition = "revpairwise", cell_type = "del.eff")} compares
+#'     the effect of the condition (\code{treat - ctrl}) in each cell type with
+#'     its average in the other cell types:
+#'     \eqn{(\beta_{treat,T} - \beta_{ctrl,T}) - \frac{1}{2}\sum_{c \in \{B, NK\}} (\beta_{treat,c} - \beta_{ctrl,c})}{(b_treat,T - b_ctrl,T) - mean over the other cell types of (b_treat,c - b_ctrl,c)}.
 #'   \item \code{at} restricts the analysis to specific levels before comparing,
 #'     for example to compare only two of three cell types.
 #' }
@@ -69,7 +76,10 @@
 #' @param method Contrast method: one of \code{"pairwise"} (default),
 #'   \code{"revpairwise"}, \code{"trt.vs.ctrl"}, \code{"trt.vs.ctrl1"},
 #'   \code{"trt.vs.ctrlk"}, \code{"eff"}, \code{"del.eff"} or \code{"consec"}, or a
-#'   named list of coefficient vectors. See Details.
+#'   named list of coefficient vectors. With \code{interaction = TRUE} it can
+#'   also be a character vector with one method per fixed effect in
+#'   \code{compare}, named by the fixed effect or in the same order as
+#'   \code{compare}. See Details.
 #' @param interaction Logical. If \code{TRUE}, interaction contrasts (differences
 #'   of differences) are computed between the factors in \code{compare}.
 #' @param ref Reference level for \code{method = "trt.vs.ctrl"} (and its
@@ -115,43 +125,48 @@
 #' @examples
 #' \dontrun{
 #' # Treatment versus control in every cell type
-#' res <- testContrasts(fit, compare = "condition")
+#' res <- contrastRegulation(fit, compare = "condition")
 #'
 #' # Same, written as treat - ctrl, keeping only significant regulators
-#' testContrasts(fit, compare = "condition", method = "revpairwise",
+#' contrastRegulation(fit, compare = "condition", method = "revpairwise",
 #'               onlySignificant = TRUE)
 #'
 #' # Cell types against a reference cell type, within each condition
-#' testContrasts(fit, compare = "cell_type", method = "trt.vs.ctrl", ref = "Bcell")
+#' contrastRegulation(fit, compare = "cell_type", method = "trt.vs.ctrl", ref = "Bcell")
 #'
 #' # Does the effect of the treatment depend on the cell type?
-#' testContrasts(fit, compare = c("condition", "cell_type"), interaction = TRUE)
+#' contrastRegulation(fit, compare = c("condition", "cell_type"), interaction = TRUE)
+#'
+#' # Is the effect of the treatment in each cell type different from its
+#' # average in the other cell types? (one method per compared fixed effect)
+#' contrastRegulation(fit, compare = c("condition", "cell_type"), interaction = TRUE,
+#'                    method = c(condition = "revpairwise", cell_type = "del.eff"))
 #'
 #' # Condition difference averaged over cell types
-#' testContrasts(fit, compare = "condition", by = character(0))
+#' contrastRegulation(fit, compare = "condition", by = character(0))
 #' }
 #'
 #' @importFrom emmeans as.emmGrid emmeans contrast test
 #' @importFrom stats as.formula
 #' @export
-testContrasts <- function(fit,
-                          compare,
-                          by               = NULL,
-                          method           = "pairwise",
-                          interaction      = FALSE,
-                          ref              = NULL,
-                          at               = NULL,
-                          weights          = c("equal", "proportional"),
-                          alpha            = 0.05,
-                          adjust           = c("fdr", "none", "holm", "bonferroni", "BH",
-                                               "BY", "hochberg", "hommel", "sidak", "mvt",
-                                               "tukey", "dunnettx", "scheffe"),
-                          minEffect        = 0,
-                          targets          = NULL,
-                          regulators       = NULL,
-                          layers           = NULL,
-                          onlySignificant  = FALSE,
-                          useOriginalNames = FALSE) {
+contrastRegulation <- function(fit,
+                               compare,
+                               by               = NULL,
+                               method           = "pairwise",
+                               interaction      = FALSE,
+                               ref              = NULL,
+                               at               = NULL,
+                               weights          = c("equal", "proportional"),
+                               alpha            = 0.05,
+                               adjust           = c("fdr", "none", "holm", "bonferroni", "BH",
+                                                    "BY", "hochberg", "hommel", "sidak", "mvt",
+                                                    "tukey", "dunnettx", "scheffe"),
+                               minEffect        = 0,
+                               targets          = NULL,
+                               regulators       = NULL,
+                               layers           = NULL,
+                               onlySignificant  = FALSE,
+                               useOriginalNames = FALSE) {
 
   weights <- match.arg(weights)
   adjust  <- match.arg(adjust)
@@ -191,11 +206,12 @@ testContrasts <- function(fit,
     cli::cli_abort("A fixed effect cannot be in both {.arg compare} and {.arg by}.")
   }
 
-  # Contrast method
+  # Contrast method(s). A single method is applied to every compared fixed effect;
+  # with `interaction = TRUE` there can be one method per compared fixed effect
   std_methods <- c("pairwise", "revpairwise", "trt.vs.ctrl", "trt.vs.ctrl1",
                    "trt.vs.ctrlk", "eff", "del.eff", "consec")
   if (is.character(method)) {
-    if (length(method) != 1 || !method %in% std_methods) {
+    if (length(method) == 0 || !all(method %in% std_methods)) {
       cli::cli_abort("{.arg method} must be one of {.val {std_methods}} or a named list of coefficients.")
     }
   } else if (!(is.list(method) && !is.null(names(method)) && all(nzchar(names(method))))) {
@@ -211,8 +227,38 @@ testContrasts <- function(fit,
     }
   }
 
+  # One method per compared fixed effect, in the order of `compare`
+  if (is.character(method) && length(method) > 1) {
+    if (!isTRUE(interaction)) {
+      cli::cli_abort(c(
+        "Several methods (one per fixed effect in {.arg compare}) need {.code interaction = TRUE}.",
+        "i" = "Without interaction contrasts, give a single method."
+      ))
+    }
+    if (length(method) != length(compare)) {
+      cli::cli_abort(c(
+        "{.arg method} must be a single method or have one method per fixed effect in {.arg compare}.",
+        "x" = "Got {length(method)} methods for {length(compare)} fixed effects: {.val {compare}}."
+      ))
+    }
+    if (!is.null(names(method))) {
+      if (!setequal(names(method), compare)) {
+        cli::cli_abort(c(
+          "The names of {.arg method} must be the fixed effects in {.arg compare}.",
+          "x" = "Names: {.val {names(method)}}. Expected: {.val {compare}}."
+        ))
+      }
+      method <- method[compare]                      # reorder to match `compare`
+    }
+  }
+  method_by_factor <- if (isTRUE(interaction)) {
+    if (length(method) == 1) rep(method, length(compare)) else method
+  } else {
+    NULL
+  }
+
   if (!is.null(ref)) {
-    if (!is.character(method) || !startsWith(method, "trt.vs.ctrl")) {
+    if (!is.character(method) || length(method) != 1 || !startsWith(method, "trt.vs.ctrl")) {
       cli::cli_abort("{.arg ref} can only be used with {.code method = \"trt.vs.ctrl\"} (or its variants).")
     }
     if (length(compare) != 1 || isTRUE(interaction)) {
@@ -278,7 +324,7 @@ testContrasts <- function(fit,
     # Build the contrasts. With `by`, they are computed within each level of `by`
     ct_args <- list(object = sub)
     if (isTRUE(interaction)) {
-      ct_args$interaction <- rep(method, length(compare))     # one method per compared factor
+      ct_args$interaction <- unname(method_by_factor)         # one method per compared factor, in the order of `compare`
     } else {
       ct_args$method <- method
     }

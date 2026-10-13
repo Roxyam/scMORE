@@ -1,5 +1,5 @@
 # Internal helpers for the functions that analyse the output of fitMore()
-# (testContrasts() and future exploration functions) --------------------------
+# (contrastRegulation() and future exploration functions) --------------------------
 
 #' Map every regulator to its regulatory layer
 #'
@@ -20,9 +20,11 @@ layerLookup <- function(fit) {
 
 #' Grid of fixed-effect combinations stored in a scMoreFit
 #'
-#' Reads the \code{emmGrid} of the first target-regulator pair that has a
-#' fitted model. All pairs share the same grid, so it is used to validate user
-#' input (variables and levels) without looping over every pair.
+#' Reads the \code{emmGrid} of the first target-regulator pair whose stored
+#' slopes can be reconstructed. All pairs share the same grid, so it is used to
+#' validate user input (variables and levels) without looping over every pair.
+#' Models that cannot be reconstructed (for example rank-deficient models, whose
+#' slopes are stored with inconsistent dimensions) are skipped.
 #'
 #' @param models Named list of models (\code{fit$Models}, possibly subset).
 #'
@@ -31,11 +33,18 @@ layerLookup <- function(fit) {
 #' @importFrom emmeans as.emmGrid
 #' @keywords internal
 firstTrendGrid <- function(models) {
+  last_error <- NULL
   for (m in models) {
     ok <- Filter(Negate(is.null), m$fit)
-    if (length(ok) > 0) return(emmeans::as.emmGrid(ok[[1]])@grid)
+    if (length(ok) == 0) next
+    grid <- tryCatch(emmeans::as.emmGrid(ok[[1]])@grid,
+                     error = function(e) { last_error <<- conditionMessage(e); NULL })
+    if (!is.null(grid)) return(grid)
   }
-  cli::cli_abort("None of the selected targets has a fitted model.")
+  cli::cli_abort(c(
+    "None of the selected models has slopes that can be reconstructed.",
+    "i" = if (!is.null(last_error)) "Last error: {last_error}" else "No target has a fitted model."
+  ))
 }
 
 
