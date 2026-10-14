@@ -111,7 +111,6 @@ checkInputNames <- function(targetData,
     }
 
     # First column = regulator, second column = target. Extra columns are kept
-    colnames(assoc_df) = c("regulator", "target")
     colnames(assoc_df)[1:2] <- c("regulator", "target")
     assoc_df[[1]] <- make.names(as.character(assoc_df[[1]]))
     assoc_df[[2]] <- make.names(as.character(assoc_df[[2]]))

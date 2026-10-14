@@ -1,13 +1,13 @@
 #' Test regulator activity per condition, cell type or any fixed effect
 #'
-#' Uses the regulator slopes stored by \code{\link{fitMore}} to test, for every
+#' Uses the regulator slopes stored by \code{\link{fitMORE}} to test, for every
 #' target and regulator, whether the regulator has an effect (slope different
 #' from zero) in each group defined by one or several fixed effects of the model.
 #' P-values can be adjusted within each target-regulator pair (see Details) and
 #' the result is returned as a tidy table.
 #'
 #' @details
-#' \code{fitMore} stores the slope of every regulator for each combination of all
+#' \code{fitMORE} stores the slope of every regulator for each combination of all
 #' the fixed effects (for example condition x cell type). This function works on
 #' those stored slopes with \pkg{emmeans}:
 #' \itemize{
@@ -44,7 +44,7 @@
 #' If the model was fitted with \code{interaction = FALSE}, slopes do not depend
 #' on the fixed effects, so every group returns the same result.
 #'
-#' @param fit An object of class \code{scMoreFit} returned by \code{\link{fitMore}}.
+#' @param fit An object of class \code{scMoreFit} returned by \code{\link{fitMORE}}.
 #' @param by Character vector with the fixed effects defining the groups (for
 #'   example \code{"condition"} or \code{c("condition", "cell_type")}). If
 #'   \code{NULL} (default) all the fixed effects of the model are used. Use
@@ -125,7 +125,7 @@ testRegulation <- function(fit,
 
   # ~~~~~~~~~~ 1. Validate arguments ~~~~~~~~~~ #
   if (!inherits(fit, "scMoreFit")) {
-    cli::cli_abort("{.arg fit} must be an object returned by {.fn fitMore}.")
+    cli::cli_abort("{.arg fit} must be an object returned by {.fn fitMORE}.")
   }
   fixedEffects <- fit$GlobalSummary$args$fixedEffects
 

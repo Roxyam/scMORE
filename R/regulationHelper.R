@@ -1,4 +1,4 @@
-# Internal helpers for the functions that analyse the output of fitMore()
+# Internal helpers for the functions that analyse the output of fitMORE()
 # (contrastRegulation() and future exploration functions) --------------------------
 
 #' Map every regulator to its regulatory layer

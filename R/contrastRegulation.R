@@ -1,6 +1,6 @@
 #' Compare regulator effects between conditions, cell types or other groups
 #'
-#' Uses the regulator slopes stored by \code{\link{fitMore}} to test, for every
+#' Uses the regulator slopes stored by \code{\link{fitMORE}} to test, for every
 #' target and regulator, whether the effect of the regulator differs between the
 #' levels of one or several fixed effects (for example treatment versus control,
 #' or one cell type versus another). Differences can be computed within the
@@ -67,7 +67,7 @@
 #' p-value is returned in \code{p.value} so a correction over the whole table can
 #' be applied afterwards. Confidence intervals are never adjusted.
 #'
-#' @param fit An object of class \code{scMoreFit} returned by \code{\link{fitMore}}.
+#' @param fit An object of class \code{scMoreFit} returned by \code{\link{fitMORE}}.
 #' @param compare Character vector with the fixed effect(s) whose levels are
 #'   compared (for example \code{"condition"}). Required.
 #' @param by Character vector with the fixed effects within whose levels the
@@ -173,7 +173,7 @@ contrastRegulation <- function(fit,
 
   # ~~~~~~~~~~ 1. Validate arguments ~~~~~~~~~~ #
   if (!inherits(fit, "scMoreFit")) {
-    cli::cli_abort("{.arg fit} must be an object returned by {.fn fitMore}.")
+    cli::cli_abort("{.arg fit} must be an object returned by {.fn fitMORE}.")
   }
   fixedEffects <- fit$GlobalSummary$args$fixedEffects
   if (length(fixedEffects) == 0) {
