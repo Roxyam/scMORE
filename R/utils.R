@@ -219,3 +219,68 @@ addExcluded <- function(tbl, features, layer, reason) {
   rbind(tbl, data.frame(feature = features, layer = layer,
                         exclusion_reason = reason, stringsAsFactors = FALSE))
 }
+
+
+#' Group of every cell
+#'
+#' Defines the groups of the design as the combinations of the levels of the
+#' categorical fixed effects. Numeric fixed effects cannot define groups and are
+#' ignored with a warning. Without fixed effects (or without metadata) all cells
+#' form a single group.
+#'
+#' @param metadata Data.frame with cell metadata. Row names must be cell IDs.
+#'   If \code{NULL}, all cells form a single group.
+#' @param fixedEffects Character vector of \code{metadata} columns used as
+#'  fixed terms.
+#' @param cells Character vector with the cell IDs, in the order of the columns of
+#'   the omic matrices.
+#'
+#' @return A factor named by cell. Its levels are the groups, labelled
+#'   \code{"level1 / level2"}, in the order of the combinations (the first fixed
+#'   effect varies fastest) and without empty combinations.
+#'
+#' @importFrom cli cli_alert_warning
+#' @keywords internal
+cellGroups <- function(metadata, fixedEffects, cells) {
+  single <- factor(stats::setNames(rep("all", length(cells)), cells))
+  if (is.null(metadata) || length(fixedEffects) == 0) return(single)
+
+  isCat <- vapply(fixedEffects, function(v) {
+    is.factor(metadata[[v]]) || is.character(metadata[[v]]) || is.logical(metadata[[v]])
+  }, logical(1))
+  if (any(!isCat)) {
+    cli::cli_alert_warning(
+      "Numeric fixed effect(s) {.field {fixedEffects[!isCat]}} cannot define groups and are ignored by the detection filters."
+    )
+  }
+  fx <- fixedEffects[isCat]
+  if (length(fx) == 0) return(single)
+
+  g <- interaction(metadata[cells, fx, drop = FALSE], drop = TRUE, sep = " / ")
+  names(g) <- cells
+  g
+}
+
+
+#' Cells with a value, by feature and group
+#'
+#' Counts, for every feature (row) and every group, the cells whose value is
+#' different from zero. Works on dense and sparse matrices.
+#'
+#' @param mat Numeric matrix or sparse \code{Matrix} (features x cells) without
+#'   missing values.
+#' @param group Factor named by cell (see \code{\link{cellGroups}}).
+#'
+#' @return An integer matrix with one row per feature and one column per level
+#'   of \code{group}.
+#'
+#' @keywords internal
+countNonZeroByGroup <- function(mat, group) {
+  grp <- group[colnames(mat)]
+  lv  <- levels(group)
+  out <- matrix(0L, nrow = nrow(mat), ncol = length(lv), dimnames = list(rownames(mat), lv))
+  for (j in seq_along(lv)) {
+    out[, j] <- as.integer(Matrix::rowSums(mat[, which(grp == lv[j]), drop = FALSE] != 0))
+  }
+  out
+}

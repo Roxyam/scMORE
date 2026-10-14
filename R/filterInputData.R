@@ -1,15 +1,32 @@
-#' Filter data quality and prior associations
+#' Filter data quality, detection and prior associations
 #'
-#' Evaluates numeric validity (NA, NaN, Inf and zero variance) of the target
-#' features and of every regulatory layer, intersects the prior associations
-#' with the features that survived, drops layers without usable priors, removes
-#' targets without regulators and regulators without targets, and records every
-#' excluded feature together with the reason.
+#' Single entry point of the filtering step. In one call it (1) evaluates the
+#' numeric validity (NA, NaN, Inf and zero variance) of the target features and
+#' of every regulatory layer, (2) intersects the prior associations with the
+#' features that survived, drops layers without usable priors and removes
+#' features without priors, (3) counts the cells with a value of every target
+#' and regulator in each group of the design and (4) prunes the prior pairs
+#' according to those counts. Every excluded feature is recorded together with
+#' the reason.
 #'
 #' @details
-#' The quality metrics are computed with sparse-aware routines, so sparse
-#' inputs (for example ATAC counts stored as \code{dgCMatrix}) are not
+#' The quality metrics and the counts are computed with sparse-aware routines,
+#' so sparse inputs (for example ATAC counts stored as \code{dgCMatrix}) are not
 #' converted to dense matrices. Duplicated prior pairs are removed.
+#'
+#' Detection is evaluated on the original values (a cell "has a value" when it
+#' is different from zero). The pruning is done in a single pass over the table
+#' of prior pairs: a pair is kept when the target is usable in at least
+#' \code{minGroups} groups and the regulator is estimable in at least one group
+#' where the target is usable (see \code{\link{filterParams}}). Targets and
+#' regulators left without pairs are excluded as a consequence; this needs no
+#' further passes because each pair depends only on the counts of its target and
+#' its regulator.
+#'
+#' With \code{interaction = FALSE} each regulator has one slope shared by all
+#' groups, so the regulator is evaluated on the cells of the groups where each
+#' target is usable: a pair is kept when the regulator has at least
+#' \code{minCellsRegulatorGroup} cells with a value in total in those groups.
 #'
 #' @param targetData Matrix, sparse \code{Matrix} or data.frame of target
 #'   features (features x cells).
@@ -18,16 +35,35 @@
 #' @param priorAssociations Named list of data.frames with the prior
 #'   regulator-target pairs of each layer (first column = regulator, second
 #'   column = target feature). Any additional columns are preserved.
+#' @param metadata Data.frame with cell metadata. Row names must be cell IDs.
+#'   If \code{NULL}, all cells form a single group.
+#' @param fixedEffects Character vector of \code{metadata} columns used as
+#'  fixed terms. They define the groups.
+#' @param filters Detection filters. The output of \code{\link{filterParams}}, a
+#'   named list with some of its elements or \code{NULL} to disable them.
+#' @param interaction Logical. If \code{TRUE}, regulators are crossed
+#'   with all fixed effects and their interactions.
 #'
 #' @return A list with the filtered \code{targetData}, \code{regulatoryData} and
-#'   \code{priorAssociations}, and the data.frame \code{excludedFeatures}
-#'   (columns \code{feature}, \code{layer} and \code{exclusion_reason}).
+#'   \code{priorAssociations}, the data.frame \code{excludedFeatures}
+#'   (columns \code{feature}, \code{layer} and \code{exclusion_reason}) and
+#'   \code{estimability}: a list with the group of each cell, the groups, the
+#'   logical matrices \code{targetGroups} (targets x groups) and
+#'   \code{regulatorGroups} (one per layer, regulators x groups) with the
+#'   groups where each feature passes its threshold, the corresponding counts of
+#'   cells with a value, and the filters used.
 #'
 #' @importFrom cli cli_abort cli_alert_info cli_alert_warning cli_alert_success
 #' @keywords internal
 filterInputData <- function(targetData,
                             regulatoryData,
-                            priorAssociations) {
+                            priorAssociations,
+                            metadata,
+                            fixedEffects,
+                            filters,
+                            interaction) {
+
+  filters <- resolveFilters(filters)
 
   excludedFeatures <- data.frame(
     feature = character(0),
@@ -137,12 +173,143 @@ filterInputData <- function(targetData,
     }
   }
 
+  # ~~~~~~~~~~ 5. Detection of targets and regulators in each group ~~~~~~~~~~ #
+  cells  <- colnames(targetData)
+  group  <- cellGroups(metadata, fixedEffects, cells)
+  groups <- levels(group)
+  nGroups <- length(groups)
+
+  minGroups <- filters$minGroups
+  if (minGroups > nGroups) {
+    if (nGroups == 1) {
+      cli::cli_alert_warning("The design defines a single group: {.arg minGroups} was set to 1.")
+      minGroups <- 1L
+    } else {
+      cli::cli_abort(c(
+        "{.arg minGroups} ({minGroups}) is larger than the number of groups of the design ({nGroups}).",
+        "i" = "Groups: {.val {groups}}."
+      ))
+    }
+  }
+
+  cli::cli_alert_info("Groups defined by {.field {if (length(fixedEffects)) fixedEffects else 'none (single group)'}}: {nGroups} group(s).")
+  if (!interaction) {
+    cli::cli_alert_info("{.code interaction = FALSE}: regulators are evaluated on the cells of the groups where each target is detected, not group by group.")
+  }
+
+  # Cells with a value of each target / regulator in each group, and the groups that pass the thresholds
+  tCounts <- countNonZeroByGroup(targetData, group)
+  rCounts <- lapply(regulatoryData, countNonZeroByGroup, group = group)
+  tOK     <- tCounts >= filters$minCellsTargetGroup
+  rOK     <- lapply(rCounts, function(m) m >= filters$minCellsRegulatorGroup)
+  tFeatureOK <- rowSums(tOK) >= minGroups
+
+  # ~~~~~~~~~~ 6. Prune the prior pairs in a single pass ~~~~~~~~~~ #
+  # A pair depends only on the counts of its target and of its regulator, so no iteration is needed
+  pairKeep <- lapply(names(priorAssociations), function(m) {
+    a  <- priorAssociations[[m]]
+    r  <- as.character(a[[1]])
+    t  <- as.character(a[[2]])
+    tp <- tOK[t, , drop = FALSE]
+    ok <- if (interaction) {
+      # estimable in at least one group where the target is usable
+      rowSums(tp & rOK[[m]][r, , drop = FALSE]) >= 1
+    } else {
+      # one slope for all groups: enough cells with a value in the groups where the target is usable
+      rowSums(rCounts[[m]][r, , drop = FALSE] * tp) >= filters$minCellsRegulatorGroup
+    }
+    ok & tFeatureOK[t]
+  })
+  names(pairKeep) <- names(priorAssociations)
+
+  # Targets without any kept pair
+  keptTargets <- unique(unlist(lapply(names(priorAssociations), function(m) {
+    as.character(priorAssociations[[m]][[2]])[pairKeep[[m]]]
+  })))
+  targetsOut <- setdiff(rownames(targetData), keptTargets)
+  if (length(targetsOut) > 0) {
+    reasonT <- ifelse(
+      !tFeatureOK[targetsOut],
+      sprintf("Detected in %d of %d groups (needs >= %d groups with >= %d cells with a value)",
+              rowSums(tOK)[targetsOut], nGroups, minGroups, filters$minCellsTargetGroup),
+      "No regulator estimable in the groups where the target is detected"
+    )
+    excludedFeatures <- addExcluded(excludedFeatures, targetsOut, "target", unname(reasonT))
+    cli::cli_alert_info("{length(targetsOut)} target feature(s) excluded by the detection filters.")
+  }
+
+  # Regulators without any kept pair
+  for (m in names(priorAssociations)) {
+    keptRegs <- unique(as.character(priorAssociations[[m]][[1]])[pairKeep[[m]]])
+    regsOut  <- setdiff(rownames(regulatoryData[[m]]), keptRegs)
+    if (length(regsOut) > 0) {
+      reasonR <- if (interaction) {
+        ifelse(rowSums(rOK[[m]])[regsOut] == 0,
+               sprintf("Fewer than %d cells with a value in every group", filters$minCellsRegulatorGroup),
+               "No target in which it is estimable (groups where the target is detected)")
+      } else {
+        sprintf("Fewer than %d cells with a value in the groups where its targets are detected",
+                filters$minCellsRegulatorGroup)
+      }
+      excludedFeatures <- addExcluded(excludedFeatures, regsOut, m, unname(reasonR))
+      cli::cli_alert_info("Layer {.field {m}}: {length(regsOut)} regulator(s) excluded by the detection filters.")
+    }
+  }
+
+  # Apply the pruning to priors and matrices
+  nPairsIn  <- sum(vapply(priorAssociations, nrow, integer(1)))
+  for (m in names(priorAssociations)) {
+    priorAssociations[[m]] <- priorAssociations[[m]][pairKeep[[m]], , drop = FALSE]
+    rownames(priorAssociations[[m]]) <- NULL
+  }
+  nPairsOut <- sum(vapply(priorAssociations, nrow, integer(1)))
+
+  emptyLayers <- names(priorAssociations)[vapply(priorAssociations, nrow, integer(1)) == 0]
+  if (length(emptyLayers) > 0) {
+    cli::cli_alert_warning("Layer(s) {.field {emptyLayers}} have no regulator-target pair left after the detection filters and are excluded.")
+    priorAssociations <- priorAssociations[setdiff(names(priorAssociations), emptyLayers)]
+    regulatoryData    <- regulatoryData[names(priorAssociations)]
+  }
+  if (length(priorAssociations) == 0 || nrow(targetData) == length(targetsOut)) {
+    cli::cli_abort(c(
+      "No regulator-target pairs remaining after the detection filters.",
+      "i" = "Consider relaxing {.arg filters}, for example {.code filterParams(minCellsTargetGroup = 3, minCellsRegulatorGroup = 3, minGroups = 1)}."
+    ))
+  }
+
+  for (m in names(regulatoryData)) {
+    active_regs <- unique(as.character(priorAssociations[[m]][[1]]))
+    if (length(setdiff(rownames(regulatoryData[[m]]), active_regs)) > 0) {
+      regulatoryData[[m]] <- regulatoryData[[m]][active_regs, , drop = FALSE]
+    }
+  }
+  if (length(targetsOut) > 0) {
+    targetData <- targetData[!rownames(targetData) %in% targetsOut, , drop = FALSE]
+  }
+
+  # ~~~~~~~~~~ 7. Estimability tables of what remains ~~~~~~~~~~ #
+  estimability <- list(
+    group            = group,
+    groups           = groups,
+    targetGroups     = tOK[rownames(targetData), , drop = FALSE],
+    targetCounts     = tCounts[rownames(targetData), , drop = FALSE],
+    regulatorGroups  = lapply(names(regulatoryData), function(m) rOK[[m]][rownames(regulatoryData[[m]]), , drop = FALSE]),
+    regulatorCounts  = lapply(names(regulatoryData), function(m) rCounts[[m]][rownames(regulatoryData[[m]]), , drop = FALSE]),
+    minGroups        = minGroups,
+    filters          = filters,
+    interaction      = interaction
+  )
+  names(estimability$regulatorGroups) <- names(estimability$regulatorCounts) <- names(regulatoryData)
+
+  cli::cli_alert_info("{nPairsOut} of {nPairsIn} prior pair(s) kept; {sum(!estimability$targetGroups)} of {length(estimability$targetGroups)} target-group combinations are below {filters$minCellsTargetGroup} cells with a value (see {.code estimability}).")
+
   cli::cli_alert_success("Data quality filtering and prior matching completed successfully.")
 
   return(list(
     targetData        = targetData,
     regulatoryData    = regulatoryData,
     priorAssociations = priorAssociations,
-    excludedFeatures  = excludedFeatures
+    excludedFeatures  = excludedFeatures,
+    estimability      = estimability
   ))
 }

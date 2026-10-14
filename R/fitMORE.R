@@ -12,8 +12,8 @@
 #' @details
 #' The pipeline validates and sanitizes the input identifiers
 #' (\code{\link{checkInputNames}}), validates the design
-#' (\code{\link{validateModelDesign}}), filters low-quality features and priors
-#' (\code{\link{filterInputData}}), detects the omic types
+#' (\code{\link{validateModelDesign}}), filters low-quality and poorly detected
+#' features and priors (\code{\link{filterInputData}}), detects the omic types
 #' (\code{\link{detectOmicTypes}}), optionally residualizes the regulators on the
 #' random effects (\code{\link{prepareTwoSteps}}) and finally fits one model per
 #' target (\code{\link{fitTargetModel}}).
@@ -69,6 +69,9 @@
 #' random effects before fitting the models. By default, TRUE
 #' @param interaction Logical. If \code{TRUE}, regulators are crossed
 #'   with all fixed effects and their interactions. By default, \code{TRUE}
+#' @param filters Detection filters. The output of \code{\link{filterParams}}, a
+#'   named list with some of its elements or \code{NULL} to disable them.
+#'   By default, \code{filterParams()}.
 #' @param parallel Reserved for future use. Parallelization is not implemented
 #'   yet and models are always fitted sequentially.By default, \code{FALSE}
 #' @param formula Reserved for future use. Custom formulas are not supported yet
@@ -85,9 +88,10 @@
 #'   \item \code{GlobalSummary}: a list with the arguments used (\code{args}),
 #'     the \code{omicType}, the \code{nameMap} of sanitized feature names, the
 #'     filtered \code{priorAssociations}, the \code{excludedFeatures} table, the
-#'     per-target \code{fitSummary} table (number of regulators, convergence,
-#'     singularity, warnings and errors), the \code{cells} used and, optionally,
-#'     the \code{residuals}.
+#'     \code{estimability} tables (groups in which each target and regulator pass
+#'     the detection filters), the per-target \code{fitSummary} table (number of
+#'     regulators, usable groups, convergence, singularity, warnings and errors),
+#'     the \code{cells} used and, optionally, the \code{residuals}.
 #' }
 #'
 #' @examples
@@ -115,6 +119,7 @@ fitMORE <- function(targetData,
                     omicType      = NULL,
                     twoSteps      = TRUE,
                     interaction   = TRUE,
+                    filters       = filterParams(),
                     parallel      = FALSE,
                     formula       = NULL,
                     keepResiduals = FALSE,
@@ -134,6 +139,13 @@ fitMORE <- function(targetData,
 
   if (!isFALSE(parallel)) {
     cli::cli_alert_warning("{.arg parallel} is not implemented yet: models are fitted sequentially.")
+  }
+
+  # Detection filters
+  filters <- resolveFilters(filters)
+
+  if (!isTRUE(interaction)) {
+    cli::cli_alert_warning("{.code interaction = FALSE}: each regulator has a single slope shared by all the groups of the design. {.fn testRegulation} will return the same slope in every group and {.fn contrastRegulation} cannot compare groups.")
   }
 
   # ~~~~~~~~~~ 1. Check and prepare data ~~~~~~~~~~ #
@@ -192,12 +204,13 @@ fitMORE <- function(targetData,
   #list2env(metadataOut, envir = environment())
 
   # 1.3. Filtering features and priors
-  cli::cli_h2("Filtering data quality and prior associations")
-  filterOut         <- filterInputData(targetData, regulatoryData, priorAssociations)
+  cli::cli_h2("Filtering data quality, detection and prior associations")
+  filterOut         <- filterInputData(targetData, regulatoryData, priorAssociations, metadata, fixedEffects, filters, interaction)
   targetData        <- filterOut$targetData
   regulatoryData    <- filterOut$regulatoryData
   priorAssociations <- filterOut$priorAssociations
   excludedFeatures  <- filterOut$excludedFeatures
+  estimability      <- filterOut$estimability
   #list2env(metadataOut, envir = environment())
 
   # 1.4 Check model variable names
@@ -214,14 +227,14 @@ fitMORE <- function(targetData,
     cli::cli_h2("Step 1: Residualizing regulatory features")
     if(length(randomEffects) > 0){
       regulatoryData <- prepareTwoSteps(
-      regulatoryData = regulatoryData,
-      metadata       = metadata,
-      randomEffects  = randomEffects,
-      omicType       = omicType,
-      REML           = REML,
-      verbose        = verbose
-    )
-    residualized <- TRUE
+        regulatoryData = regulatoryData,
+        metadata       = metadata,
+        randomEffects  = randomEffects,
+        omicType       = omicType,
+        REML           = REML,
+        verbose        = verbose
+      )
+      residualized <- TRUE
     } else {
       cli::cli_alert_warning("{.arg randomEffects} not specified: skipping Step 1 (residualization).")
     }
@@ -275,6 +288,7 @@ fitMORE <- function(targetData,
     data.frame(
       target       = r$target,
       n_regulators = length(r$regulators),
+      n_groups_usable = unname(rowSums(estimability$targetGroups)[r$target]),
       converged    = r$converged,
       is_singular  = r$is_singular,
       has_warnings = !is.null(r$warnings),
@@ -303,12 +317,14 @@ fitMORE <- function(targetData,
         twoSteps      = twoSteps,
         residualized  = residualized,
         interaction   = interaction,
+        filters       = filters,
         seed          = seed
       ),
       omicType          = omicType,
       nameMap           = nameMap,
       priorAssociations = priorAssociations,
       excludedFeatures  = excludedFeatures,
+      estimability      = estimability,
       fitSummary        = fitSummary,
       cells             = colnames(targetData),
       residuals         = if (keepResiduals && residualized) regulatoryData else NULL
